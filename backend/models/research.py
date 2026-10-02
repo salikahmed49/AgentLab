@@ -15,4 +15,8 @@ class SearchResult(BaseModel):
 class ResearchResponse(BaseModel):
     topic: str
     status: str
-    results: list[SearchResult]
+    research: str
+    analysis: str
+    verification: str
+    report: str
+    sources: list[SearchResult]

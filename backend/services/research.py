@@ -1,12 +1,24 @@
-from backend.models.research import SearchResult
-from backend.tools.web_search import search_web
+from backend.graph import research_graph
 
 
 def perform_research(topic: str) -> dict:
-    results: list[SearchResult] = search_web(topic)
+    result = research_graph.invoke(
+        {
+            "topic": topic,
+            "research": "",
+            "analysis": "",
+            "verification": "",
+            "report": "",
+            "sources": [],
+        }
+    )
 
     return {
-        "topic": topic,
+        "topic": result["topic"],
         "status": "completed",
-        "results": results
+        "research": result["research"],
+        "analysis": result["analysis"],
+        "verification": result["verification"],
+        "report": result["report"],
+        "sources": result["sources"],
     }
