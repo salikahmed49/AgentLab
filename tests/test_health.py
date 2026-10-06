@@ -1,10 +1,16 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.main import app
+from backend.main import _parse_cors_origins, app
 
 
 client = TestClient(app)
+
+
+def test_cors_origins_trim_whitespace_and_trailing_slashes():
+    assert _parse_cors_origins(
+        " https://agent.example/ , https://preview.example "
+    ) == ["https://agent.example", "https://preview.example"]
 
 
 @pytest.fixture(autouse=True)

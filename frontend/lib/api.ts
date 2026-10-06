@@ -1,13 +1,19 @@
 ﻿import type { ResearchResult, Stage, UploadedDocument } from "./types";
 
-const API_URL_CANDIDATES = [
-  process.env.NEXT_PUBLIC_API_URL,
-  "http://localhost:8001",
-  "http://localhost:8000",
-].filter((value): value is string => Boolean(value));
+const configuredApiUrl = process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/+$/, "");
+const API_URL_CANDIDATES = configuredApiUrl
+  ? [configuredApiUrl]
+  : process.env.NODE_ENV === "development"
+    ? ["http://localhost:8001", "http://localhost:8000"]
+    : [];
 
 async function resolveApiBaseUrl(): Promise<string> {
   const uniqueCandidates = [...new Set(API_URL_CANDIDATES)];
+  if (uniqueCandidates.length === 0) {
+    throw new ApiError(
+      "The backend URL is not configured. Set NEXT_PUBLIC_API_URL in the Vercel environment and redeploy."
+    );
+  }
 
   for (const candidate of uniqueCandidates) {
     try {
@@ -20,7 +26,9 @@ async function resolveApiBaseUrl(): Promise<string> {
     }
   }
 
-  return uniqueCandidates[0] ?? "http://localhost:8000";
+  throw new ApiError(
+    `Cannot reach the backend at ${uniqueCandidates[0]}. Check NEXT_PUBLIC_API_URL, Render health, and the backend CORS_ORIGINS setting.`
+  );
 }
 
 type ResearchJobStatus = {

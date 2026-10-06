@@ -29,7 +29,14 @@ app.state.rate_limit_max_requests = 300
 app.state.rate_limit_buckets = defaultdict(deque)
 app.state.rate_limit_lock = threading.Lock()
 
-allowed_origins = os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+
+def _parse_cors_origins(value: str) -> list[str]:
+    return [origin.strip().rstrip("/") for origin in value.split(",") if origin.strip()]
+
+
+allowed_origins = _parse_cors_origins(
+    os.getenv("CORS_ORIGINS", "http://localhost:3000")
+)
 
 app.add_middleware(
     CORSMiddleware,

@@ -58,16 +58,24 @@ To enable production deployments:
    `TAVILY_API_KEY` plus at least one of `GROQ_API_KEY` or `GEMINI_API_KEY` in
    Render. Do not put secret values in the Blueprint file.
 2. Create/import the `frontend` directory as a Vercel project. Set
-   `NEXT_PUBLIC_API_URL` in its production environment to the Render service URL,
-   then redeploy once so the frontend build includes that API URL.
+   `NEXT_PUBLIC_API_URL` in its production environment to
+   `https://agentlab-thst.onrender.com` (no trailing slash), then redeploy so
+   the frontend build includes that API URL.
 3. Add these repository secrets under **Settings → Secrets and variables →
-   Actions**:
+   Actions → New repository secret**:
    - `RENDER_DEPLOY_HOOK_URL` — the Render service's deploy hook URL.
    - `VERCEL_TOKEN` — a Vercel access token.
    - `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` — the IDs from Vercel project settings.
 
-After setup, each successful push to `main` triggers the Render backend deploy
-and builds/deploys the frontend to Vercel. Pull requests run CI only.
+If these credentials are absent, CI still passes after successful tests/builds,
+and the workflow summary explicitly says which deployments were skipped. After
+setup, each successful push to `main` triggers the configured deployments. Pull
+requests run CI only.
+
+For Vercel preview deployments, add `NEXT_PUBLIC_API_URL` to the Preview
+environment as well. Add each Vercel site origin (scheme and hostname only,
+without a trailing slash) to Render's comma-separated `CORS_ORIGINS` value.
+Vercel deployment protection must allow your users to access the frontend.
 
 ## Required environment variables
 
