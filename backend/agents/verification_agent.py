@@ -10,10 +10,19 @@ class VerificationAgent:
         topic: str,
         research: str,
         analysis: str,
-        sources: list[SearchResult]
+        sources: list[SearchResult],
+        document_context: str = "",
     ) -> str:
 
         source_context = format_sources(sources)
+
+        document_block = ""
+        if document_context.strip():
+            document_block = f"""
+
+User-provided document context:
+{document_context[:4000]}
+"""
 
         prompt = f"""
 Topic:
@@ -27,6 +36,7 @@ Analysis:
 
 Original sources:
 {source_context}
+{document_block}
 
 Verify the important claims made in the research and analysis.
 
@@ -45,6 +55,7 @@ Rules:
 - Do not invent evidence.
 - If evidence is insufficient, say so.
 - Identify contradictions.
+- Use the supplied documents as supporting context only when they are consistent with the sources.
 - Do not treat unsupported claims as facts.
 """
 

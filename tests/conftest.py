@@ -1,5 +1,6 @@
-import pytest
 from collections import defaultdict, deque
+
+import pytest
 
 from backend.main import app
 

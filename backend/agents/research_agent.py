@@ -5,7 +5,7 @@ from backend.tools.web_search import search_web
 
 class ResearchAgent:
 
-    def run(self, topic: str) -> dict:
+    def run(self, topic: str, document_context: str = "") -> dict:
         results: list[SearchResult] = search_web(topic)
 
         research_context = "\n\n".join(
@@ -14,11 +14,19 @@ class ResearchAgent:
 Title: {result.title}
 URL: {result.url}
 Content:
-{result.content[:1200]}
+{result.content[:800]}
 """
                 for result in results
             ]
         )
+
+        document_block = ""
+        if document_context.strip():
+            document_block = f"""
+
+User-provided documents:
+{document_context}
+"""
 
         prompt = f"""
 Research topic:
@@ -27,6 +35,7 @@ Research topic:
 The following information was collected from web search:
 
 {research_context}
+{document_block}
 
 Create a factual research summary based only on the supplied information.
 
@@ -34,6 +43,7 @@ Requirements:
 - Explain the main concepts.
 - Identify important findings.
 - Combine information across sources.
+- Use the user-provided documents as supporting context when relevant.
 - Do not invent facts.
 - Clearly distinguish facts from uncertainty.
 - Keep the research useful for a later analysis agent.

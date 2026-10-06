@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 210" fill="none">
+  <defs>
+    <linearGradient id="signal" x1="24" y1="178" x2="158" y2="25" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8427c4"/>
+      <stop offset=".48" stop-color="#286ce2"/>
+      <stop offset="1" stop-color="#20d4c2"/>
+    </linearGradient>
+  </defs>
+  <g stroke="#15202b" stroke-linecap="round" stroke-linejoin="round" stroke-width="7">
+    <path d="M91 22c-15-9-34 1-34 19-19-1-31 17-24 34-18 10-16 37 2 46-7 20 7 39 27 39 8 19 34 23 48 8 20 8 40-7 39-28 18-13 18-39 2-52 4-21-13-39-33-36-4-18-15-28-27-30Z" fill="url(#signal)"/>
+    <path d="M91 22v32m-34-13 19 21m-41 13 37 15m-35 31 37-24m-10 63 16-38m48 30-24-32m38-20-44-7m44-45-38 34m5-48-7 42" stroke="url(#signal)"/>
+    <circle cx="91" cy="90" r="13" fill="#f8fbff" stroke="url(#signal)"/>
+    <circle cx="57" cy="41" r="7" fill="#f8fbff" stroke="url(#signal)"/>
+    <circle cx="38" cy="79" r="7" fill="#f8fbff" stroke="url(#signal)"/>
+    <circle cx="39" cy="121" r="7" fill="#f8fbff" stroke="url(#signal)"/>
+    <circle cx="56" cy="160" r="7" fill="#f8fbff" stroke="url(#signal)"/>
+    <circle cx="123" cy="156" r="7" fill="#f8fbff" stroke="url(#signal)"/>
+    <circle cx="147" cy="111" r="7" fill="#f8fbff" stroke="url(#signal)"/>
+    <circle cx="132" cy="61" r="7" fill="#f8fbff" stroke="url(#signal)"/>
+    <path d="M91 22V11m33 35 14-12m9 77h14m-40 45 8 13" stroke="url(#signal)"/>
+    <circle cx="91" cy="10" r="4" fill="#20d4c2" stroke="none"/>
+    <circle cx="139" cy="34" r="4" fill="#20d4c2" stroke="none"/>
+    <circle cx="161" cy="111" r="4" fill="#20d4c2" stroke="none"/>
+    <circle cx="125" cy="182" r="4" fill="#8427c4" stroke="none"/>
+  </g>
+  <text x="194" y="137" fill="#17212b" font-family="Arial, Helvetica, sans-serif" font-size="91" font-weight="700">AGENT</text>
+  <text x="540" y="137" fill="url(#signal)" font-family="Arial, Helvetica, sans-serif" font-size="91" font-weight="700">LAB</text>
+</svg>

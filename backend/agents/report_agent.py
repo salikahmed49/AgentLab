@@ -11,10 +11,19 @@ class ReportAgent:
         research: str,
         analysis: str,
         verification: str,
-        sources: list[SearchResult]
+        sources: list[SearchResult],
+        document_context: str = "",
     ) -> str:
 
         source_context = format_sources(sources)
+
+        document_block = ""
+        if document_context.strip():
+            document_block = f"""
+
+User-provided document context:
+{document_context[:4000]}
+"""
 
         prompt = f"""
 Topic:
@@ -31,6 +40,7 @@ Verification:
 
 Sources:
 {source_context}
+{document_block}
 
 Write the final research report.
 
@@ -55,7 +65,7 @@ Use this structure:
 For Sources, list the supplied source titles and URLs.
 
 Requirements:
-- Use the supplied research and verification.
+- Use the supplied research, verification, and uploaded document context when it adds signal.
 - Do not invent facts.
 - Clearly identify uncertainty.
 - Do not present unsupported claims as established facts.

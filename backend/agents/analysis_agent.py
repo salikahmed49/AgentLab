@@ -9,10 +9,19 @@ class AnalysisAgent:
         self,
         topic: str,
         research: str,
-        sources: list[SearchResult]
+        sources: list[SearchResult],
+        document_context: str = "",
     ) -> str:
 
         source_context = format_sources(sources)
+
+        document_block = ""
+        if document_context.strip():
+            document_block = f"""
+
+User-provided document context:
+{document_context[:4000]}
+"""
 
         prompt = f"""
 Topic:
@@ -23,6 +32,7 @@ Research Agent output:
 
 Original sources:
 {source_context}
+{document_block}
 
 Analyze the research.
 
@@ -36,7 +46,7 @@ Your analysis should include:
 6. Important observations
 7. Areas where evidence is weak or incomplete
 
-Do not introduce facts that are not supported by the research or sources.
+Do not introduce facts that are not supported by the research, document context, or sources.
 
 The goal is to understand the research, not simply repeat it.
 """
