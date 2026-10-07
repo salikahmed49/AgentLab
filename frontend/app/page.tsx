@@ -51,10 +51,6 @@ function getUserFriendlyError(message: string): string {
     return "The search provider is not configured for this environment. Please check the backend settings before retrying.";
   }
 
-  if (normalized.includes("provider") || normalized.includes("unavailable") || normalized.includes("rate limit")) {
-    return "The AI provider is temporarily unavailable. Please retry in a moment.";
-  }
-
   return message;
 }
 

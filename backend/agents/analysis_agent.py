@@ -9,6 +9,96 @@ from backend.services.source_context import format_sources
 
 logger = logging.getLogger("agentlab")
 
+ANALYSIS_FIELDS = (
+    ("key_findings", "Key findings"),
+    ("patterns_and_trends", "Patterns and trends"),
+    ("benefits", "Benefits"),
+    ("limitations_and_risks", "Limitations and risks"),
+    ("disagreements", "Disagreements between sources"),
+    ("observations", "Important observations"),
+    ("evidence_gaps", "Evidence gaps"),
+)
+
+
+def _format_analysis(response: str) -> str:
+    try:
+        analysis = json.loads(response)
+    except json.JSONDecodeError:
+        return response.strip()
+    if not isinstance(analysis, dict):
+        return response.strip()
+
+    sections = []
+    for key, label in ANALYSIS_FIELDS:
+        values = analysis.get(key, [])
+        if isinstance(values, str):
+            values = [values]
+        if isinstance(values, list):
+            lines = [
+                f"- {value.strip()}"
+                for value in values
+                if isinstance(value, str) and value.strip()
+            ]
+            if lines:
+                sections.append(f"## {label}\n" + "\n".join(lines))
+    return "\n\n".join(sections)
+
+
+def _fallback_analysis(
+    topic: str,
+    research: str,
+    sources: list[SearchResult],
+    document_context: str,
+) -> str:
+    evidence = []
+    if research.strip():
+        evidence.append(
+            f"- Research summary: {' '.join(research.split())[:1200]}"
+        )
+    for source in sources[:5]:
+        snippet = " ".join(source.content.split())[:500]
+        if snippet:
+            evidence.append(f"- {source.title}: {snippet}")
+    if document_context.strip():
+        evidence.append(
+            f"- User-provided context: {' '.join(document_context.split())[:500]}"
+        )
+
+    if evidence:
+        findings = "\n".join(evidence)
+        observations = (
+            "The available inputs are summarized above. They have not been "
+            "independently synthesized because the analysis providers were unavailable."
+        )
+    else:
+        findings = (
+            f"No usable research, source text, or document context was available "
+            f"for **{topic}**."
+        )
+        observations = (
+            "Topic-specific patterns, benefits, risks, and disagreements cannot "
+            "be established from the available input."
+        )
+
+    return "\n\n".join(
+        (
+            f"## Key findings\n{findings}",
+            "## Patterns and trends\n"
+            "Insufficient analyzed evidence to identify reliable patterns or trends.",
+            "## Benefits\n"
+            "No benefits can be confirmed from the available analyzed evidence.",
+            "## Limitations and risks\n"
+            "Evidence is limited; treat the available inputs as preliminary and "
+            "do not infer unsupported conclusions.",
+            "## Disagreements between sources\n"
+            "No source comparison was available to establish whether sources disagree.",
+            f"## Important observations\n{observations}",
+            "## Evidence gaps\n"
+            "A working LLM analysis provider and additional independently checked "
+            "sources are needed for a complete synthesis.",
+        )
+    )
+
 
 class AnalysisAgent:
 
@@ -60,43 +150,30 @@ Do not introduce facts that are not supported by the research, document context,
 The goal is to understand the research, not simply repeat it.
 """
 
-        response = await agenerate_response(
-            prompt,
-            system_prompt=(
-                "You are the Analysis Agent in a multi-agent research system. "
-                "You interpret research, identify patterns, compare information, "
-                "and explain what the collected evidence means."
-            ),
-            stage="analysis",
-            response_format="json",
-            max_output_tokens=1500,
-        )
         try:
-            analysis = json.loads(response)
-        except json.JSONDecodeError:
-            logger.warning("analysis_json_parse_failed; retaining provider response")
-            return response
-        if not isinstance(analysis, dict):
-            logger.warning("analysis_json_shape_invalid; retaining provider response")
-            return response
+            response = await agenerate_response(
+                prompt,
+                system_prompt=(
+                    "You are the Analysis Agent in a multi-agent research system. "
+                    "You interpret research, identify patterns, compare information, "
+                    "and explain what the collected evidence means."
+                ),
+                stage="analysis",
+                response_format="json",
+                max_output_tokens=1500,
+            )
+            analysis = _format_analysis(response)
+            if analysis:
+                return analysis
+            logger.warning("analysis_provider_returned_no_usable_content")
+        except Exception:
+            logger.exception(
+                "analysis_llm_failed; returning evidence-limited analysis fallback"
+            )
 
-        labels = {
-            "key_findings": "Key findings",
-            "patterns_and_trends": "Patterns and trends",
-            "benefits": "Benefits",
-            "limitations_and_risks": "Limitations and risks",
-            "disagreements": "Disagreements between sources",
-            "observations": "Important observations",
-            "evidence_gaps": "Evidence gaps",
-        }
-        sections = []
-        for key, label in labels.items():
-            values = analysis.get(key, [])
-            if isinstance(values, str):
-                values = [values]
-            if isinstance(values, list) and values:
-                sections.append(
-                    f"## {label}\n"
-                    + "\n".join(f"- {item}" for item in values if isinstance(item, str))
-                )
-        return "\n\n".join(sections) if sections else response
+        return _fallback_analysis(
+            topic,
+            research,
+            sources,
+            document_context,
+        )

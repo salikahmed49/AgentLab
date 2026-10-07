@@ -76,11 +76,12 @@ def test_auto_routing_falls_back_from_groq_to_gemini(monkeypatch):
 
     monkeypatch.setenv("GROQ_API_KEY", "groq-test-key")
     monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
     monkeypatch.setattr(llm, "_call_groq", failing_groq)
     monkeypatch.setattr(llm, "_call_gemini", fake_gemini)
 
     result = asyncio.run(
-        llm.agenerate_response("Synthesize findings.", stage="research")
+        llm.agenerate_response("Analyze findings.", stage="analysis")
     )
 
     assert result == "fallback result"
@@ -91,7 +92,6 @@ def test_analysis_uses_fast_groq_first_and_report_uses_gemini_first():
     assert llm._provider_order("analysis", "short", "analysis") == [
         "groq",
         "gemini",
-        "ollama",
     ]
     assert llm._provider_order("verification", "short", "verify") == [
         "groq",
@@ -102,6 +102,15 @@ def test_analysis_uses_fast_groq_first_and_report_uses_gemini_first():
         "gemini",
         "groq",
         "ollama",
+    ]
+
+
+def test_analysis_keeps_gemini_fallback_when_groq_is_pinned(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+
+    assert llm._provider_order("analysis", "short", "analysis") == [
+        "groq",
+        "gemini",
     ]
 
 

@@ -51,27 +51,18 @@ npm run build
 
 ## Deploy to Vercel and Render
 
-The GitHub Actions workflow deploys on pushes to `main`, after both CI jobs pass.
-To enable production deployments:
+GitHub Actions only runs backend tests and frontend lint/build checks. It does
+not deploy either service. After pushing changes, deploy manually:
 
-1. Create a Render Blueprint from this repository using [render.yaml](render.yaml).
+1. Deploy the backend from the Render dashboard using [render.yaml](render.yaml).
    Set `CORS_ORIGINS` to the production Vercel origin, and configure the
    `TAVILY_API_KEY` plus at least one of `GROQ_API_KEY` or `GEMINI_API_KEY` in
    Render. Do not put secret values in the Blueprint file.
-2. Create/import the `frontend` directory as a Vercel project. Set
-   `NEXT_PUBLIC_API_URL` in its production environment to
+2. Deploy the `frontend` directory from the Vercel dashboard or your local Vercel
+   CLI. Set `NEXT_PUBLIC_API_URL` in its production environment to
    `https://agentlab-thst.onrender.com` (no trailing slash), then redeploy so
-   the frontend build includes that API URL.
-3. Add these repository secrets under **Settings → Secrets and variables →
-   Actions → New repository secret**:
-   - `RENDER_DEPLOY_HOOK_URL` — the Render service's deploy hook URL.
-   - `VERCEL_TOKEN` — a Vercel access token.
-   - `VERCEL_ORG_ID` and `VERCEL_PROJECT_ID` — the IDs from Vercel project settings.
-
-If these credentials are absent, CI still passes after successful tests/builds,
-and the workflow summary explicitly says which deployments were skipped. After
-setup, each successful push to `main` triggers the configured deployments. Pull
-requests run CI only.
+   the frontend build includes that API URL. Deploy backend changes to Render
+   and frontend changes to Vercel independently as needed.
 
 For Vercel preview deployments, add `NEXT_PUBLIC_API_URL` to the Preview
 environment as well. Add each Vercel site origin (scheme and hostname only,
@@ -128,6 +119,10 @@ Gemini Flash first and fall back to another configured provider if needed.
 Provider requests use asynchronous clients, bounded concurrency, per-call
 timeouts, and short retries for HTTP 429/5xx responses. Repeated Tavily queries
 are cached in memory for five minutes per backend process.
+Analysis always tries its preferred cloud provider and the other cloud provider
+in sequence. If both fail or return unusable analysis, AgentLab emits a clearly
+qualified, evidence-limited analysis from the available research and continues
+the pipeline rather than failing that stage.
 
 The frontend uses `POST /research/stream` for Server-Sent Events progress and
 completed report sections. The existing `POST /research` JSON response and

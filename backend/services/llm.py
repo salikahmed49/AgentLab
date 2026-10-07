@@ -73,13 +73,20 @@ def _provider_order(stage: str, prompt: str, system_prompt: str) -> list[str]:
     if preferred_provider != "auto":
         if preferred_provider not in {"groq", "gemini", "ollama"}:
             raise LLMProviderError("LLM_PROVIDER must be auto, gemini, groq, or ollama.")
+        if stage == "analysis":
+            if preferred_provider == "groq":
+                return ["groq", "gemini"]
+            if preferred_provider == "gemini":
+                return ["gemini", "groq"]
         return [preferred_provider]
 
+    if stage == "analysis":
+        return ["groq", "gemini"]
     if len(prompt) >= 30_000:
         return ["gemini", "groq", "ollama"]
     if stage == "report":
         return ["gemini", "groq", "ollama"]
-    if stage in {"analysis", "verification"}:
+    if stage == "verification":
         return ["groq", "gemini", "ollama"]
     if stage in {"citation_linking", "follow_up_questions"}:
         return ["groq", "gemini", "ollama"]
