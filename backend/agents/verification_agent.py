@@ -68,42 +68,77 @@ Rules:
 - Do not treat unsupported claims as facts.
 """
 
-        response = await agenerate_response(
-            prompt,
-            system_prompt=(
-                "You are the Verification Agent in a multi-agent research system. "
-                "Check whether important claims are supported by the supplied evidence."
-            ),
-            stage="verification",
-            response_format="json",
-            max_output_tokens=1600,
-        )
         try:
-            claims = json.loads(response)
-        except json.JSONDecodeError:
-            logger.warning("verification_json_parse_failed; retaining provider response")
-            return response
-        if isinstance(claims, dict):
-            claims = claims.get("claims")
-        if not isinstance(claims, list):
-            logger.warning("verification_json_shape_invalid; retaining provider response")
-            return response
+            response = await agenerate_response(
+                prompt,
+                system_prompt=(
+                    "You are the Verification Agent in a multi-agent research system. "
+                    "Check whether important claims are supported by the supplied evidence."
+                ),
+                stage="verification",
+                response_format="json",
+                max_output_tokens=1600,
+            )
+            try:
+                claims = json.loads(response)
+            except json.JSONDecodeError:
+                logger.warning("verification_json_parse_failed; retaining provider response")
+                return response
+            if isinstance(claims, dict):
+                claims = claims.get("claims")
+            if not isinstance(claims, list):
+                logger.warning("verification_json_shape_invalid; retaining provider response")
+                return response
 
-        formatted = []
-        for claim in claims:
-            if not isinstance(claim, dict):
-                continue
-            statement = claim.get("claim", "Claim")
-            verdict = claim.get("verdict", "PARTIALLY SUPPORTED")
-            explanation = claim.get("explanation", "")
-            source_numbers = claim.get("source_numbers", [])
-            references = (
-                ", ".join(str(number) for number in source_numbers)
-                if isinstance(source_numbers, list)
-                else str(source_numbers)
+            formatted = []
+            for claim in claims:
+                if not isinstance(claim, dict):
+                    continue
+                statement = claim.get("claim", "Claim")
+                verdict = claim.get("verdict", "PARTIALLY SUPPORTED")
+                explanation = claim.get("explanation", "")
+                source_numbers = claim.get("source_numbers", [])
+                references = (
+                    ", ".join(str(number) for number in source_numbers)
+                    if isinstance(source_numbers, list)
+                    else str(source_numbers)
+                )
+                formatted.append(
+                    f"- **{verdict}:** {statement} {explanation}"
+                    + (f" (Sources: {references})" if references else "")
+                )
+            return "\n".join(formatted) if formatted else response
+        except Exception:
+            logger.exception(
+                "verification_llm_failed; returning explicitly unverified evidence"
             )
-            formatted.append(
-                f"- **{verdict}:** {statement} {explanation}"
-                + (f" (Sources: {references})" if references else "")
+
+        evidence_lines = []
+        for line in (research + "\n" + analysis).splitlines():
+            text = line.strip().lstrip("-*# ").strip()
+            if text and not text.startswith("http"):
+                evidence_lines.append(text[:350])
+        for source in sources[:5]:
+            snippet = " ".join(source.content.split())[:350]
+            if snippet:
+                evidence_lines.append(f"{source.title}: {snippet}")
+        if document_context.strip():
+            evidence_lines.append(
+                "User document context: "
+                + " ".join(document_context.split())[:350]
             )
-        return "\n".join(formatted) if formatted else response
+
+        if not evidence_lines:
+            return (
+                "Automated verification could not be completed because the "
+                "verification providers were unavailable, and no usable evidence "
+                f"was provided for {topic}. Treat all claims as unverified."
+            )
+        evidence_summary = "\n".join(f"- {line}" for line in evidence_lines[:12])
+        return (
+            "Automated verification could not be completed because the "
+            "verification providers were unavailable. The following supplied "
+            "material is included for review only; none of it has been independently "
+            "verified. Treat all claims as unverified.\n\n"
+            f"Evidence requiring verification for {topic}:\n{evidence_summary}"
+        )

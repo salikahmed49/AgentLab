@@ -89,7 +89,7 @@ AgentLab can route each agent task to the most suitable configured provider:
 In automatic mode it falls back to another available provider if one fails.
 Private or explicitly local-only content is never sent to a cloud provider.
 For automatic routing, configure any cloud API keys you want available and keep
-Ollama running with a model installed:
+Ollama running with a model installed if you want it used as a local fallback:
 
 ```powershell
 winget install --id Ollama.Ollama --exact
@@ -122,7 +122,12 @@ are cached in memory for five minutes per backend process.
 Analysis always tries its preferred cloud provider and the other cloud provider
 in sequence. If both fail or return unusable analysis, AgentLab emits a clearly
 qualified, evidence-limited analysis from the available research and continues
-the pipeline rather than failing that stage.
+the pipeline rather than failing that stage. Verification also tries the other
+cloud provider when its preferred provider is pinned. If both cloud providers
+fail, it marks the available material as unverified and continues without
+presenting it as confirmed. Ollama is attempted as an automatic fallback only
+when `OLLAMA_HOST` is configured; Render deployments without a local Ollama
+instance therefore skip that unavailable network call.
 
 The frontend uses `POST /research/stream` for Server-Sent Events progress and
 completed report sections. The existing `POST /research` JSON response and

@@ -96,7 +96,6 @@ def test_analysis_uses_fast_groq_first_and_report_uses_gemini_first():
     assert llm._provider_order("verification", "short", "verify") == [
         "groq",
         "gemini",
-        "ollama",
     ]
     assert llm._provider_order("report", "short", "report") == [
         "gemini",
@@ -112,6 +111,50 @@ def test_analysis_keeps_gemini_fallback_when_groq_is_pinned(monkeypatch):
         "groq",
         "gemini",
     ]
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected"),
+    [
+        ("groq", ["groq", "gemini"]),
+        ("gemini", ["gemini", "groq"]),
+    ],
+)
+def test_verification_keeps_cloud_fallback_when_provider_is_pinned(
+    monkeypatch, provider, expected
+):
+    monkeypatch.setenv("LLM_PROVIDER", provider)
+
+    assert llm._provider_order("verification", "short", "verify") == expected
+
+
+def test_ollama_is_not_tried_without_explicit_configuration(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "groq-test-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-test-key")
+    monkeypatch.delenv("OLLAMA_HOST", raising=False)
+    calls = []
+
+    async def failing_groq(*args):
+        calls.append("groq")
+        raise RuntimeError("Groq unavailable")
+
+    async def failing_gemini(*args):
+        calls.append("gemini")
+        raise RuntimeError("Gemini unavailable")
+
+    async def unexpected_ollama(*args):
+        calls.append("ollama")
+        raise RuntimeError("Ollama should not be tried")
+
+    monkeypatch.setattr(llm, "_call_groq", failing_groq)
+    monkeypatch.setattr(llm, "_call_gemini", failing_gemini)
+    monkeypatch.setattr(llm, "_call_ollama", unexpected_ollama)
+
+    with pytest.raises(llm.LLMProviderError, match="All automatic LLM providers failed"):
+        asyncio.run(
+            llm.agenerate_response("Verify claims.", stage="verification")
+        )
+    assert calls == ["groq", "gemini"]
 
 
 def test_privacy_routing_stays_local(monkeypatch):

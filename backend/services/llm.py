@@ -78,16 +78,21 @@ def _provider_order(stage: str, prompt: str, system_prompt: str) -> list[str]:
                 return ["groq", "gemini"]
             if preferred_provider == "gemini":
                 return ["gemini", "groq"]
+        if stage == "verification":
+            if preferred_provider == "groq":
+                return ["groq", "gemini"]
+            if preferred_provider == "gemini":
+                return ["gemini", "groq"]
         return [preferred_provider]
 
     if stage == "analysis":
+        return ["groq", "gemini"]
+    if stage == "verification":
         return ["groq", "gemini"]
     if len(prompt) >= 30_000:
         return ["gemini", "groq", "ollama"]
     if stage == "report":
         return ["gemini", "groq", "ollama"]
-    if stage == "verification":
-        return ["groq", "gemini", "ollama"]
     if stage in {"citation_linking", "follow_up_questions"}:
         return ["groq", "gemini", "ollama"]
 
@@ -337,7 +342,7 @@ async def agenerate_response(
     configured = {
         "groq": bool(os.getenv("GROQ_API_KEY")),
         "gemini": bool(os.getenv("GEMINI_API_KEY")),
-        "ollama": True,
+        "ollama": bool(os.getenv("OLLAMA_HOST")) or providers == ["ollama"],
     }
     candidates = [name for name in providers if configured[name]]
     if not candidates:
