@@ -1,194 +1,386 @@
-﻿import json
+import asyncio
+import json
 import logging
 import os
 import re
 import time
-from collections.abc import Callable
-from urllib.error import HTTPError, URLError
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+import httpx
 from dotenv import load_dotenv
+from groq import AsyncGroq
 
-try:
-    from groq import Groq
-except ImportError:  # pragma: no cover - only used when the dependency is absent.
-    Groq = None
-
+load_dotenv()
 
 logger = logging.getLogger("agentlab")
-load_dotenv()
+MAX_CONTEXT_CHARS = 120_000
+MAX_CONCURRENCY = 5
+LLM_CALL_TIMEOUT_SECONDS = 30.0
+_CALL_SEMAPHORE: ContextVar[asyncio.Semaphore | None] = ContextVar(
+    "agentlab_llm_call_semaphore", default=None
+)
 
 
 class LLMProviderError(RuntimeError):
     pass
 
 
-MAX_CONTEXT_CHARS = 120_000
-
-
 def _truncate_for_context(text: str, max_chars: int = MAX_CONTEXT_CHARS) -> str:
     if len(text) <= max_chars:
         return text
     suffix = "...[truncated to fit model context window]"
-    trimmed = text[: max_chars - len(suffix)]
-    return f"{trimmed.rstrip()} {suffix}"
+    return f"{text[: max_chars - len(suffix)].rstrip()} {suffix}"
 
 
-def _is_transient_provider_error(error: Exception) -> bool:
-    message = str(error).lower()
-    transient_tokens = (
-        "rate limit",
-        "rate_limit",
-        "429",
-        "503",
-        "unavailable",
-        "temporar",
-        "high demand",
-        "overloaded",
-        "resource exhausted",
-        "try again later",
+def _is_retryable_error(error: Exception) -> bool:
+    response = getattr(error, "response", None)
+    status = (
+        getattr(error, "status_code", None)
+        or getattr(error, "code", None)
+        or getattr(response, "status_code", None)
     )
-    return any(token in message for token in transient_tokens)
+    if status is not None:
+        try:
+            status_code = int(status)
+        except (TypeError, ValueError):
+            return False
+        return status_code == 429 or 500 <= status_code <= 599
+    return False
 
 
-def _with_retry(
-    provider_name: str,
-    provider_callable: Callable[[str, str], str],
+def _provider_order(stage: str, prompt: str, system_prompt: str) -> list[str]:
+    privacy_routing = os.getenv("AGENTLAB_PRIVACY_ROUTING", "false").lower() == "true"
+    privacy_patterns = (
+        r"\bkeep (?:this|the data|the documents?) local\b",
+        r"\blocal only\b",
+        r"\bdo not send (?:this|the data|the documents?) to (?:the )?cloud\b",
+        r"\bconfidential\b",
+        r"\bprivate\b",
+        r"\bpersonal data\b",
+        r"\bpatient records?\b",
+        r"\bmedical records?\b",
+        r"\baccount numbers?\b",
+        r"\bsocial security numbers?\b",
+        r"\bpassport numbers?\b",
+    )
+    if privacy_routing and any(re.search(pattern, prompt.lower()) for pattern in privacy_patterns):
+        return ["ollama"]
+
+    preferred_provider = os.getenv("LLM_PROVIDER", "auto").strip().lower() or "auto"
+    if preferred_provider != "auto":
+        if preferred_provider not in {"groq", "gemini", "ollama"}:
+            raise LLMProviderError("LLM_PROVIDER must be auto, gemini, groq, or ollama.")
+        return [preferred_provider]
+
+    if len(prompt) >= 30_000:
+        return ["gemini", "groq", "ollama"]
+    if stage == "report":
+        return ["gemini", "groq", "ollama"]
+    if stage in {"analysis", "verification"}:
+        return ["groq", "gemini", "ollama"]
+    if stage in {"citation_linking", "follow_up_questions"}:
+        return ["groq", "gemini", "ollama"]
+
+    lowered_task = system_prompt.lower()
+    if "analysis agent" in lowered_task or "verification agent" in lowered_task:
+        return ["groq", "gemini", "ollama"]
+    return ["groq", "gemini", "ollama"]
+
+
+def _stage_model(provider: str, stage: str) -> str:
+    if provider == "groq":
+        if stage in {"analysis", "verification"}:
+            return os.getenv(
+                "GROQ_FAST_MODEL",
+                os.getenv("GROQ_MODEL", "openai/gpt-oss-20b"),
+            )
+        return os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+    if provider == "gemini":
+        return os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+    return os.getenv("OLLAMA_MODEL", "qwen3:1.7b")
+
+
+async def _call_groq(
     prompt: str,
     system_prompt: str,
-    max_attempts: int = 3,
-) -> str:
-    last_error: Exception | None = None
-    for attempt in range(1, max_attempts + 1):
-        try:
-            return provider_callable(prompt, system_prompt)
-        except Exception as error:
-            last_error = error
-            if not _is_transient_provider_error(error) or attempt == max_attempts:
-                raise
-            logger.warning(
-                "provider_retry %s attempt=%d/%d error=%s",
-                provider_name,
-                attempt,
-                max_attempts,
-                type(error).__name__,
-            )
-            time.sleep(attempt * 1.5)
-    if last_error is not None:
-        raise last_error
-    raise LLMProviderError(f"{provider_name} failed without returning a result.")
-
-
-def _generate_with_groq(prompt: str, system_prompt: str) -> str:
+    stage: str,
+    response_format: str | None,
+    max_output_tokens: int,
+) -> tuple[str, int | None, int | None]:
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         raise LLMProviderError("GROQ_API_KEY is not configured")
-    if Groq is None:
-        raise LLMProviderError("The Groq SDK is not installed in this environment.")
 
-    prompt = _truncate_for_context(prompt, MAX_CONTEXT_CHARS - 20_000)
-    system_prompt = _truncate_for_context(system_prompt, 20_000)
-
-    model = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
-    extra = {"max_completion_tokens": int(os.getenv("GROQ_MAX_TOKENS", "2500"))}
-    if model.startswith("openai/gpt-oss"):
-        extra["reasoning_effort"] = os.getenv("GROQ_REASONING_EFFORT", "low")
-
-    client = Groq(api_key=api_key, max_retries=1, timeout=60)
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
+    model = _stage_model("groq", stage)
+    client = AsyncGroq(
+        api_key=api_key,
+        max_retries=0,
+        timeout=LLM_CALL_TIMEOUT_SECONDS,
+    )
+    options: dict[str, object] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _truncate_for_context(system_prompt, 20_000)},
+            {
+                "role": "user",
+                "content": _truncate_for_context(prompt, MAX_CONTEXT_CHARS - 20_000),
+            },
         ],
-        extra_body=extra,
+        "max_completion_tokens": max_output_tokens,
+    }
+    if response_format == "json":
+        options["response_format"] = {"type": "json_object"}
+    if model.startswith("openai/gpt-oss"):
+        options["extra_body"] = {"reasoning_effort": "low"}
+
+    async with client:
+        response = await client.chat.completions.create(**options)
+    content = response.choices[0].message.content
+    if not content:
+        raise LLMProviderError("The AI provider returned an empty response.")
+    usage = getattr(response, "usage", None)
+    return (
+        content,
+        getattr(usage, "prompt_tokens", None),
+        getattr(usage, "completion_tokens", None),
     )
 
-    content = response.choices[0].message.content
-    if content is None:
-        raise LLMProviderError("The AI provider returned an empty response.")
-    return content
 
-
-def _generate_with_gemini(prompt: str, system_prompt: str) -> str:
+async def _call_gemini(
+    prompt: str,
+    system_prompt: str,
+    stage: str,
+    response_format: str | None,
+    max_output_tokens: int,
+) -> tuple[str, int | None, int | None]:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise LLMProviderError("GEMINI_API_KEY is not configured")
 
     try:
         from google import genai
-    except ImportError as error:
+        from google.genai import types
+    except ImportError as error:  # pragma: no cover - dependency is required in production.
         raise LLMProviderError(
             "The Gemini SDK is not installed. Install google-genai to use GEMINI_API_KEY."
         ) from error
 
-    client = genai.Client(api_key=api_key)
-    combined_prompt = _truncate_for_context(f"{system_prompt}\n\n{prompt}", MAX_CONTEXT_CHARS)
-    response = client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=combined_prompt,
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(
+            timeout=int(LLM_CALL_TIMEOUT_SECONDS * 1000),
+            retry_options=types.HttpRetryOptions(attempts=1),
+        ),
     )
-
-    text = getattr(response, "text", None)
-    if text:
-        return text
-
-    if hasattr(response, "candidates") and response.candidates:
-        parts = getattr(response.candidates[0], "content", None)
-        if parts is not None:
-            extracted = []
-            for part in getattr(parts, "parts", []) or []:
-                if getattr(part, "text", None):
-                    extracted.append(part.text)
-            joined = "".join(extracted)
-            if joined:
-                return joined
-
-    raise LLMProviderError("The Gemini API returned an empty response.")
-
-
-def _generate_with_ollama(prompt: str, system_prompt: str) -> str:
-    host = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
-    model = os.getenv("OLLAMA_MODEL", "qwen3:1.7b")
-    request = Request(
-        f"{host}/api/chat",
-        data=json.dumps(
-            {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": _truncate_for_context(system_prompt, 20_000)},
-                    {
-                        "role": "user",
-                        "content": _truncate_for_context(prompt, MAX_CONTEXT_CHARS - 20_000),
-                    },
-                ],
-                "stream": False,
-                "think": False,
-                "options": {"num_ctx": 32_768},
-            }
-        ).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    config: dict[str, object] = {"max_output_tokens": max_output_tokens}
+    if response_format == "json":
+        config["response_mime_type"] = "application/json"
+    if stage not in {"analysis", "verification"}:
+        config["thinking_config"] = {"thinking_budget": 0}
 
     try:
-        with urlopen(request, timeout=90) as response:
-            payload = json.load(response)
-    except HTTPError as error:
-        detail = error.read().decode("utf-8", errors="replace").strip()
-        raise LLMProviderError(
-            f"Ollama returned HTTP {error.code}: {detail or error.reason}"
-        ) from error
-    except URLError as error:
-        raise LLMProviderError(
-            "Cannot connect to Ollama. Start the Ollama app and verify OLLAMA_HOST."
-        ) from error
+        response = await client.aio.models.generate_content(
+            model=_stage_model("gemini", stage),
+            contents=_truncate_for_context(
+                f"{system_prompt}\n\n{prompt}", MAX_CONTEXT_CHARS
+            ),
+            config=config,
+        )
+    finally:
+        await client.aio.aclose()
 
+    try:
+        text = getattr(response, "text", None)
+    except (AttributeError, ValueError):
+        text = None
+    if not text:
+        candidates = getattr(response, "candidates", None) or []
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            parts = getattr(content, "parts", None) or []
+            text = "".join(
+                part_text
+                for part in parts
+                if (part_text := getattr(part, "text", None))
+            )
+            if text:
+                break
+    if not text:
+        raise LLMProviderError("The Gemini API returned an empty response.")
+    usage = getattr(response, "usage_metadata", None)
+    return (
+        text,
+        getattr(usage, "prompt_token_count", None),
+        getattr(usage, "candidates_token_count", None),
+    )
+
+
+async def _call_ollama(
+    prompt: str,
+    system_prompt: str,
+    stage: str,
+    response_format: str | None,
+    max_output_tokens: int,
+) -> tuple[str, int | None, int | None]:
+    host = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+    body: dict[str, object] = {
+        "model": _stage_model("ollama", stage),
+        "messages": [
+            {"role": "system", "content": _truncate_for_context(system_prompt, 20_000)},
+            {
+                "role": "user",
+                "content": _truncate_for_context(prompt, MAX_CONTEXT_CHARS - 20_000),
+            },
+        ],
+        "stream": False,
+        "think": False,
+        "options": {"num_ctx": 32_768, "num_predict": max_output_tokens},
+    }
+    if response_format == "json":
+        body["format"] = "json"
+
+    async with httpx.AsyncClient(timeout=LLM_CALL_TIMEOUT_SECONDS) as client:
+        response = await client.post(f"{host}/api/chat", json=body)
+        response.raise_for_status()
+        payload = response.json()
     message = payload.get("message") if isinstance(payload, dict) else None
     content = message.get("content") if isinstance(message, dict) else None
-    if isinstance(content, str) and content:
-        return content
-    raise LLMProviderError("Ollama returned an empty response.")
+    if not isinstance(content, str) or not content:
+        raise LLMProviderError("Ollama returned an empty response.")
+    return content, payload.get("prompt_eval_count"), payload.get("eval_count")
+
+
+async def _call_provider(
+    provider: str,
+    prompt: str,
+    system_prompt: str,
+    stage: str,
+    response_format: str | None,
+    max_output_tokens: int,
+) -> tuple[str, int | None, int | None]:
+    call = {
+        "groq": _call_groq,
+        "gemini": _call_gemini,
+        "ollama": _call_ollama,
+    }[provider]
+    last_error: Exception | None = None
+    for attempt in range(3):
+        started = time.perf_counter()
+        try:
+            result = await call(
+                prompt,
+                system_prompt,
+                stage,
+                response_format,
+                max_output_tokens,
+            )
+            logger.info(
+                "llm_call provider=%s stage=%s seconds=%.2f input_tokens=%s output_tokens=%s status=ok",
+                provider,
+                stage,
+                time.perf_counter() - started,
+                result[1] if result[1] is not None else "unavailable",
+                result[2] if result[2] is not None else "unavailable",
+            )
+            return result
+        except Exception as error:
+            last_error = error
+            logger.warning(
+                "llm_call provider=%s stage=%s seconds=%.2f status=failed error=%s",
+                provider,
+                stage,
+                time.perf_counter() - started,
+                type(error).__name__,
+            )
+            if not _is_retryable_error(error) or attempt == 2:
+                raise
+            await asyncio.sleep(min(0.25 * (2**attempt), 1.0))
+    if last_error is not None:
+        raise last_error
+    raise LLMProviderError(f"{provider} failed without returning a result.")
+
+
+@asynccontextmanager
+async def llm_concurrency_limit(limit: int = MAX_CONCURRENCY):
+    current = _CALL_SEMAPHORE.get()
+    if current is not None:
+        yield current
+        return
+
+    semaphore = asyncio.Semaphore(limit)
+    token = _CALL_SEMAPHORE.set(semaphore)
+    try:
+        yield semaphore
+    finally:
+        _CALL_SEMAPHORE.reset(token)
+
+
+async def agenerate_response(
+    prompt: str,
+    system_prompt: str = "You are a helpful research assistant.",
+    *,
+    stage: str = "general",
+    response_format: str | None = None,
+    max_output_tokens: int = 1200,
+) -> str:
+    providers = _provider_order(stage, prompt, system_prompt)
+    configured = {
+        "groq": bool(os.getenv("GROQ_API_KEY")),
+        "gemini": bool(os.getenv("GEMINI_API_KEY")),
+        "ollama": True,
+    }
+    candidates = [name for name in providers if configured[name]]
+    if not candidates:
+        raise LLMProviderError(
+            "No LLM provider is available. Configure Ollama or set GEMINI_API_KEY/GROQ_API_KEY."
+        )
+
+    async with llm_concurrency_limit() as semaphore:
+        errors: list[tuple[str, Exception]] = []
+        for provider in candidates:
+            try:
+                async with semaphore:
+                    text, _, _ = await _call_provider(
+                        provider,
+                        prompt,
+                        system_prompt,
+                        stage,
+                        response_format,
+                        max_output_tokens,
+                    )
+                return text
+            except Exception as error:
+                errors.append((provider, error))
+                logger.warning(
+                    "llm_provider_failed provider=%s stage=%s error=%s",
+                    provider,
+                    stage,
+                    type(error).__name__,
+                )
+                if providers == ["ollama"]:
+                    raise LLMProviderError(
+                        "Local-only processing was requested, but Ollama is unavailable."
+                    ) from error
+
+    failed_providers = ", ".join(name for name, _ in errors)
+    last_error = errors[-1][1]
+    raise LLMProviderError(
+        f"All automatic LLM providers failed ({failed_providers}): {last_error}"
+    ) from last_error
+
+
+def generate_response(
+    prompt: str,
+    system_prompt: str = "You are a helpful research assistant.",
+    **options,
+) -> str:
+    """Synchronous compatibility wrapper; all provider calls use async clients."""
+    return asyncio.run(
+        agenerate_response(prompt, system_prompt, **options)
+    )
 
 
 def ollama_model_available() -> bool:
@@ -209,129 +401,3 @@ def ollama_model_available() -> bool:
         and model in {item.get("name"), item.get("model")}
         for item in models
     )
-
-
-def _automatic_provider_order(prompt: str, system_prompt: str) -> tuple[list[str], str]:
-    task = system_prompt.lower()
-    content = prompt.lower()
-    privacy_patterns = (
-        r"\bkeep (?:this|the data|the documents?) local\b",
-        r"\blocal only\b",
-        r"\bdo not send (?:this|the data|the documents?) to (?:the )?cloud\b",
-        r"\bconfidential\b",
-        r"\bprivate\b",
-        r"\bpersonal data\b",
-        r"\bpatient records?\b",
-        r"\bmedical records?\b",
-        r"\baccount numbers?\b",
-        r"\bsocial security numbers?\b",
-        r"\bpassport numbers?\b",
-    )
-    privacy_routing = os.getenv("AGENTLAB_PRIVACY_ROUTING", "false").lower() == "true"
-    if privacy_routing and any(re.search(pattern, content) for pattern in privacy_patterns):
-        return ["ollama"], "privacy-sensitive or explicitly local-only input"
-
-    if len(prompt) >= 30_000:
-        return ["gemini", "groq", "ollama"], "large context"
-
-    complex_intent_terms = (
-        "compare",
-        "contrast",
-        "evaluate",
-        "trade-off",
-        "tradeoff",
-        "causal",
-        "forecast",
-        "predict",
-        "multi-step",
-        "competing explanations",
-        "conflicting evidence",
-    )
-    if (
-        "analysis agent" in task
-        or "verification agent" in task
-        or any(re.search(rf"\b{re.escape(term)}\b", content) for term in complex_intent_terms)
-    ):
-        return ["gemini", "groq", "ollama"], "complex analysis or verification"
-
-    if "follow-up question agent" in task or "citation and evidence linker agent" in task:
-        return ["groq", "gemini", "ollama"], "constrained question or citation task"
-
-    if "research agent" in task or "report agent" in task:
-        return ["groq", "gemini", "ollama"], "research synthesis or report drafting"
-
-    return ["groq", "gemini", "ollama"], "general task"
-
-
-def _generate_automatically(prompt: str, system_prompt: str) -> str:
-    provider_functions: dict[str, Callable[[str, str], str]] = {
-        "gemini": _generate_with_gemini,
-        "groq": _generate_with_groq,
-        "ollama": _generate_with_ollama,
-    }
-    configured = {
-        "gemini": bool(os.getenv("GEMINI_API_KEY")),
-        "groq": bool(os.getenv("GROQ_API_KEY")),
-        "ollama": True,
-    }
-    preferred_order, reason = _automatic_provider_order(prompt, system_prompt)
-    providers = [
-        name for name in preferred_order
-        if configured[name] and (name != "groq" or Groq is not None)
-    ]
-    if not providers:
-        raise LLMProviderError(
-            "No LLM provider is available. Configure Ollama or set GEMINI_API_KEY/GROQ_API_KEY."
-        )
-
-    errors: list[tuple[str, Exception]] = []
-    for index, provider_name in enumerate(providers):
-        if index == 0:
-            logger.info("llm_route provider=%s reason=%s", provider_name, reason)
-        try:
-            return _with_retry(
-                provider_name,
-                provider_functions[provider_name],
-                prompt,
-                system_prompt,
-            )
-        except Exception as error:
-            errors.append((provider_name, error))
-            logger.warning(
-                "llm_provider_failed provider=%s error=%s",
-                provider_name,
-                type(error).__name__,
-            )
-            if reason.startswith("privacy-sensitive"):
-                raise LLMProviderError(
-                    "Local-only processing was requested, but Ollama is unavailable."
-                ) from error
-
-    failed_providers = ", ".join(name for name, _ in errors)
-    last_error = errors[-1][1]
-    raise LLMProviderError(
-        f"All automatic LLM providers failed ({failed_providers}): {last_error}"
-    ) from last_error
-
-
-def generate_response(
-    prompt: str,
-    system_prompt: str = "You are a helpful research assistant."
-) -> str:
-    selected_provider = os.getenv("LLM_PROVIDER", "auto").strip().lower() or "auto"
-    if selected_provider == "auto":
-        return _generate_automatically(prompt, system_prompt)
-
-    providers = {
-        "gemini": ("GEMINI_API_KEY", _generate_with_gemini),
-        "groq": ("GROQ_API_KEY", _generate_with_groq),
-        "ollama": (None, _generate_with_ollama),
-    }
-    if selected_provider not in providers:
-        raise LLMProviderError(
-            "LLM_PROVIDER must be auto, gemini, groq, or ollama."
-        )
-    required_key, provider = providers[selected_provider]
-    if required_key and not os.getenv(required_key):
-        raise LLMProviderError(f"{required_key} is not configured")
-    return _with_retry(selected_provider, provider, prompt, system_prompt)

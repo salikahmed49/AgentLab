@@ -8,13 +8,16 @@ def test_run_step_returns_result_on_success():
     assert run_step("demo", lambda: "ok") == "ok"
 
 
-def test_run_step_retries_then_succeeds():
+def test_run_step_retries_transient_http_error_then_succeeds():
     calls = []
+
+    class TransientHTTPError(Exception):
+        status_code = 503
 
     def flaky():
         calls.append(1)
         if len(calls) < 3:
-            raise ValueError("temporary problem")
+            raise TransientHTTPError("temporary problem")
         return "recovered"
 
     result = run_step("demo", flaky, retries=2, wait_seconds=0)
@@ -23,7 +26,7 @@ def test_run_step_retries_then_succeeds():
     assert len(calls) == 3
 
 
-def test_run_step_raises_after_all_retries():
+def test_run_step_does_not_retry_non_http_errors():
     calls = []
 
     def always_fails():
@@ -36,7 +39,7 @@ def test_run_step_raises_after_all_retries():
     except StepFailedError as error:
         assert error.step_name == "demo"
 
-    assert len(calls) == 3
+    assert len(calls) == 1
 
 
 def test_run_step_does_not_retry_missing_config():

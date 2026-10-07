@@ -3,6 +3,9 @@
 @tailwind utilities;
 
 :root {
+  --font-source-serif: Georgia, "Times New Roman", serif;
+  --font-plex-sans: Arial, Helvetica, sans-serif;
+  --font-plex-mono: ui-monospace, "Cascadia Code", "Segoe UI Mono", Consolas, monospace;
   --paper: #f7f2ea;
   --surface: rgba(255, 253, 249, 0.82);
   --ink: #1b1916;

@@ -9,6 +9,10 @@ export function slugify(text: string) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
+export function normalizeLineBreakTags(text: string) {
+  return text.replace(/<br\s*\/?\s*>/gi, "  \n");
+}
+
 export function hostOf(url: string) {
   try {
     return new URL(url).hostname.replace(/^www\./, "");

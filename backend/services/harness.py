@@ -33,7 +33,7 @@ def run_step(
     on_step: Callable[[str, str], None] | None = None,
     on_result: Callable[[str, object], None] | None = None,
 ):
-    """Run function(). Retry on failure. Log timing. Raise StepFailedError at the end."""
+    """Run one pipeline step and only retry transient HTTP 429/5xx failures."""
     callback = on_step if on_step is not None else CURRENT_PROGRESS_CALLBACK
     total_attempts = retries + 1
 
@@ -52,6 +52,7 @@ def run_step(
                 "step=%s attempt=%d status=ok seconds=%.2f",
                 step_name, attempt, seconds,
             )
+            logger.info("stage %s took %.2f s", step_name, seconds)
             if callback:
                 callback(step_name, "completed")
             return result
@@ -62,12 +63,25 @@ def run_step(
                 "step=%s attempt=%d status=failed seconds=%.2f error=%s",
                 step_name, attempt, seconds, type(error).__name__,
             )
+            logger.info("stage %s took %.2f s before failure", step_name, seconds)
 
-            # A missing API key will never fix itself, so do not retry it.
+            response = getattr(error, "response", None)
+            status = (
+                getattr(error, "status_code", None)
+                or getattr(error, "code", None)
+                or getattr(response, "status_code", None)
+            )
+            try:
+                status = int(status)
+            except (TypeError, ValueError):
+                status = None
+            retryable = status == 429 or (
+                status is not None and 500 <= status <= 599
+            )
             is_last_attempt = attempt == total_attempts
-            if is_last_attempt or isinstance(error, RuntimeError):
+            if is_last_attempt or not retryable:
                 if callback:
                     callback(step_name, "failed")
                 raise StepFailedError(step_name, error) from error
 
-            time.sleep(wait_seconds * attempt)
+            time.sleep(min(wait_seconds * (2 ** (attempt - 1)), 1.0))

@@ -59,8 +59,8 @@ The main flow is:
 - FastAPI
 - Pydantic
 - LangGraph
-- Gemini for primary LLM inference
-- Groq as a fallback option
+- Async Groq for research, analysis, verification, and constrained tasks
+- Gemini Flash for report sections, with configured-provider fallback
 - Tavily for web search
 
 ### Core idea
@@ -121,18 +121,17 @@ The main frontend page is in:
 - allow file upload
 - validate the input
 - send the request to backend
-- poll the job status
+- consume stage progress and streamed report sections
 - display the progress and final data
 
 ### Typical frontend flow
 1. User types a question.
 2. User optionally uploads supporting documents.
 3. User clicks the main research action.
-4. Frontend triggers a backend job creation call.
-5. The app begins polling the job status endpoint.
-6. As steps complete, the UI changes state and updates the pipeline tracker.
-7. Each completed section is shown while later agents continue working.
-8. When the job is complete, the full result view replaces the progress view.
+4. Frontend opens a Server-Sent Events request to `POST /research/stream`.
+5. Stage updates advance the pipeline tracker.
+6. Completed report sections are shown as they arrive and assembled in report order.
+7. The final response replaces the progressive view when the pipeline completes.
 
 ## 6) How the backend works
 
@@ -165,6 +164,11 @@ Returns the current job state, including:
 
 #### POST /research
 Direct research call without job tracking for simple usage.
+
+#### POST /research/stream
+Streams stage progress, completed research sections, report sections, and the
+final result as Server-Sent Events. The existing JSON and job-polling endpoints
+remain available to clients that do not use streaming.
 
 ## 7) Research job lifecycle
 

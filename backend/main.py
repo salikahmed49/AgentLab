@@ -1,4 +1,6 @@
-﻿import inspect
+import asyncio
+import inspect
+import json
 import logging
 import os
 import threading
@@ -7,8 +9,9 @@ import uuid
 from collections import defaultdict, deque
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.models.research import DocumentReference, ResearchRequest, ResearchResponse
 from backend.services.documents import extract_document_text
@@ -21,6 +24,7 @@ JOB_LOCK = threading.Lock()
 
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("agentlab")
 
 app = FastAPI(title="AgentLab")
 
@@ -293,3 +297,93 @@ def research(request: ResearchRequest):
     if "documents" in inspect.signature(perform_research).parameters:
         return perform_research(request.topic, request.documents)
     return perform_research(request.topic)
+
+
+@app.post("/research/stream")
+async def research_stream(request: ResearchRequest):
+    event_queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def publish(event_name: str, payload: object):
+        if loop.is_closed():
+            return
+        try:
+            loop.call_soon_threadsafe(event_queue.put_nowait, (event_name, payload))
+        except RuntimeError:
+            logger.debug("stream_client_disconnected")
+
+    def on_step(step_name: str, step_state: str):
+        publish("progress", {"step": step_name, "state": step_state})
+
+    def on_result(step_name: str, value: object):
+        if step_name == "research" and isinstance(value, dict):
+            payload = {
+                "research": value.get("research", ""),
+                "sources": value.get("sources", []),
+            }
+        else:
+            field_names = {
+                "analysis": "analysis",
+                "verification": "verification",
+                "citation_linking": "citations",
+                "follow_up_questions": "follow_up_questions",
+            }
+            field = field_names.get(step_name)
+            payload = {field: value} if field else {}
+        if payload:
+            publish("partial_result", payload)
+
+    def on_report_section(index: int, section: str, text: str):
+        publish(
+            "report_section",
+            {"index": index, "section": section, "text": text},
+        )
+
+    def execute():
+        try:
+            result = perform_research(
+                request.topic,
+                request.documents,
+                on_step=on_step,
+                on_result=on_result,
+                on_report_chunk=on_report_section,
+            )
+            publish("complete", result)
+        except Exception as error:
+            logger.exception("streaming_research_failed")
+            publish(
+                "error",
+                {
+                    "step": getattr(error, "step_name", None),
+                    "message": str(error),
+                },
+            )
+
+    async def event_stream():
+        worker = asyncio.create_task(asyncio.to_thread(execute))
+        try:
+            while True:
+                try:
+                    event_name, payload = await asyncio.wait_for(
+                        event_queue.get(), timeout=15
+                    )
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
+                encoded = json.dumps(jsonable_encoder(payload), separators=(",", ":"))
+                yield f"event: {event_name}\ndata: {encoded}\n\n"
+                if event_name in {"complete", "error"}:
+                    break
+        finally:
+            if not worker.done():
+                worker.cancel()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

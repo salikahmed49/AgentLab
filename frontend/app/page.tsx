@@ -9,9 +9,36 @@ import { PipelineTracker } from "@/components/pipeline-tracker";
 import { QueryForm } from "@/components/query-form";
 import { Results } from "@/components/results";
 import { ProgressiveResults } from "@/components/progressive-results";
-import { ApiError, getResearchJobStatus, startResearchJob, uploadDocuments } from "@/lib/api";
+import { ApiError, runResearchStream, uploadDocuments } from "@/lib/api";
 import { loadRecent, saveRecent } from "@/lib/history";
 import type { Phase, ResearchResult, Stage, UploadedDocument } from "@/lib/types";
+
+function emptyResult(topic: string): ResearchResult {
+  return {
+    topic,
+    status: "running",
+    research: "",
+    analysis: "",
+    verification: "",
+    report: "",
+    sources: [],
+    documents: [],
+    citations: [],
+    follow_up_questions: [],
+  };
+}
+
+function formatStreamedReport(
+  topic: string,
+  sections: Record<number, { section: string; text: string }>,
+): string {
+  const content = Object.keys(sections)
+    .map(Number)
+    .sort((left, right) => left - right)
+    .map((index) => `## ${sections[index].section}\n\n${sections[index].text}`)
+    .join("\n\n");
+  return `# ${topic}${content ? `\n\n${content}` : ""}`;
+}
 
 function getUserFriendlyError(message: string): string {
   const normalized = message.toLowerCase();
@@ -31,6 +58,12 @@ function getUserFriendlyError(message: string): string {
   return message;
 }
 
+function toApiError(error: unknown): ApiError {
+  if (error instanceof ApiError) return error;
+  if (error instanceof Error) return new ApiError(error.message);
+  return new ApiError("Research could not be completed.");
+}
+
 export default function Home() {
   const [topic, setTopic] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
@@ -38,7 +71,6 @@ export default function Home() {
   const [failed, setFailed] = useState<Stage | null>(null);
   const [currentStep, setCurrentStep] = useState<Stage | null>(null);
   const [completedSteps, setCompletedSteps] = useState<Stage[]>([]);
-  const [jobId, setJobId] = useState<string | null>(null);
   const [result, setResult] = useState<ResearchResult | null>(null);
   const [partialResult, setPartialResult] = useState<ResearchResult | null>(null);
   const [recent, setRecent] = useState<string[]>([]);
@@ -50,44 +82,6 @@ export default function Home() {
         setRecent(loadRecent());
       });
   }, []);
-
-  useEffect(() => {
-    if (phase !== "running" || !jobId) return;
-
-    const id = setInterval(async () => {
-      try {
-        const status = await getResearchJobStatus(jobId);
-        setCurrentStep(status.current_step ?? null);
-        setCompletedSteps(status.completed_steps ?? []);
-        if (status.partial_result) {
-          setPartialResult(status.partial_result);
-        }
-
-        if (status.status === "completed" && status.result) {
-          setResult(status.result);
-          setPartialResult(null);
-          setPhase("done");
-          setCurrentStep(null);
-          setCompletedSteps(status.completed_steps ?? []);
-          setRecent(saveRecent(topic));
-          toast.success(documents.length > 0 ? "Report ready with uploaded documents" : "Report ready");
-          return;
-        }
-
-        if (status.status === "failed") {
-          setError(status.error ?? "The research job failed.");
-          setFailed(status.current_step ?? null);
-          setPhase("error");
-          return;
-        }
-      } catch {
-        setError("The job status could not be refreshed.");
-        setPhase("error");
-      }
-    }, 1200);
-
-    return () => clearInterval(id);
-  }, [jobId, phase, topic, documents.length]);
 
   async function submit() {
     const clean = topic.trim();
@@ -106,18 +100,74 @@ export default function Home() {
     setCurrentStep(null);
     setCompletedSteps([]);
     setResult(null);
-    setPartialResult(null);
-    setJobId(null);
+    setPartialResult(emptyResult(clean));
 
     try {
-      const job = await startResearchJob(clean, documents);
-      setJobId(job.job_id);
-      setCurrentStep("research");
-      toast.info("Research started");
+      let streamedSections: Record<number, { section: string; text: string }> = {};
+      const completedResult = await runResearchStream(
+        clean,
+        controller.signal,
+        documents,
+        (event) => {
+          if (event.event === "progress") {
+            if (event.data.state === "processing") {
+              setCurrentStep(event.data.step);
+            } else if (event.data.state === "completed") {
+              setCompletedSteps((current) =>
+                current.includes(event.data.step) ? current : [...current, event.data.step]
+              );
+            } else {
+              setFailed(event.data.step);
+            }
+          } else if (event.event === "partial_result") {
+            setPartialResult((current) => ({
+              ...emptyResult(clean),
+              ...current,
+              ...event.data,
+            }));
+          } else if (event.event === "report_section") {
+            if (event.data.index < 0) {
+              streamedSections = {};
+              setPartialResult((current) => ({
+                ...emptyResult(clean),
+                ...current,
+                report: event.data.text,
+              }));
+              return;
+            }
+            streamedSections[event.data.index] = {
+              section: event.data.section,
+              text: event.data.text,
+            };
+            const report = formatStreamedReport(clean, streamedSections);
+            setPartialResult((current) => ({
+              ...emptyResult(clean),
+              ...current,
+              report,
+            }));
+          }
+        },
+      );
+      setResult(completedResult);
+      setPartialResult(null);
+      setPhase("done");
+      setCurrentStep(null);
+      setCompletedSteps((current) => {
+        const finalSteps: Stage[] = [...current];
+        for (const step of ["citation_linking", "follow_up_questions"] as const) {
+          if (!finalSteps.includes(step)) finalSteps.push(step);
+        }
+        return finalSteps;
+      });
+      setRecent(saveRecent(clean));
+      toast.success(documents.length > 0 ? "Report ready with uploaded documents" : "Report ready");
     } catch (err) {
-      const apiError = err as ApiError;
-      setError(apiError.message);
+      const apiError = toApiError(err);
+      setError(getUserFriendlyError(apiError.message));
+      setFailed(apiError.step ?? null);
       setPhase("error");
+    } finally {
+      abortRef.current = null;
     }
   }
 
@@ -142,7 +192,7 @@ export default function Home() {
               setDocuments((current) => [...current, ...uploaded]);
               toast.success(`${uploaded.length} document${uploaded.length === 1 ? "" : "s"} added`);
             } catch (err) {
-              const apiError = err as ApiError;
+              const apiError = toApiError(err);
               toast.error(apiError.message || "Could not upload the document.");
             }
           }}

@@ -18,3 +18,4 @@ class ResearchState(TypedDict):
     documents: list[str]
     on_step: NotRequired[Callable[[str, str], None] | None]
     on_result: NotRequired[Callable[[str, object], None] | None]
+    on_report_chunk: NotRequired[Callable[[int, str, str], None] | None]

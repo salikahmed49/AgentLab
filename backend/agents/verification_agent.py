@@ -1,6 +1,13 @@
+import asyncio
+import json
+import logging
+
 from backend.models.research import SearchResult
-from backend.services.llm import generate_response
+from backend.services.llm import agenerate_response
 from backend.services.source_context import format_sources
+
+
+logger = logging.getLogger("agentlab")
 
 
 class VerificationAgent:
@@ -13,7 +20,18 @@ class VerificationAgent:
         sources: list[SearchResult],
         document_context: str = "",
     ) -> str:
+        return asyncio.run(
+            self.arun(topic, research, analysis, sources, document_context)
+        )
 
+    async def arun(
+        self,
+        topic: str,
+        research: str,
+        analysis: str,
+        sources: list[SearchResult],
+        document_context: str = "",
+    ) -> str:
         source_context = format_sources(sources)
 
         document_block = ""
@@ -38,18 +56,9 @@ Original sources:
 {source_context}
 {document_block}
 
-Verify the important claims made in the research and analysis.
-
-For each important claim:
-
-1. State the claim.
-2. Mark it as:
-   - SUPPORTED
-   - PARTIALLY SUPPORTED
-   - NOT SUPPORTED
-   - CONFLICTING
-3. Explain why.
-4. Reference the relevant source number(s).
+Verify all important claims in one pass. Return a JSON object with a "claims"
+array. Each array item has claim, verdict, explanation, and source_numbers fields.
+Allowed verdicts are SUPPORTED, PARTIALLY SUPPORTED, NOT SUPPORTED, and CONFLICTING.
 
 Rules:
 - Do not invent evidence.
@@ -59,10 +68,42 @@ Rules:
 - Do not treat unsupported claims as facts.
 """
 
-        return generate_response(
+        response = await agenerate_response(
             prompt,
             system_prompt=(
                 "You are the Verification Agent in a multi-agent research system. "
                 "Check whether important claims are supported by the supplied evidence."
-            )
+            ),
+            stage="verification",
+            response_format="json",
+            max_output_tokens=1600,
         )
+        try:
+            claims = json.loads(response)
+        except json.JSONDecodeError:
+            logger.warning("verification_json_parse_failed; retaining provider response")
+            return response
+        if isinstance(claims, dict):
+            claims = claims.get("claims")
+        if not isinstance(claims, list):
+            logger.warning("verification_json_shape_invalid; retaining provider response")
+            return response
+
+        formatted = []
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            statement = claim.get("claim", "Claim")
+            verdict = claim.get("verdict", "PARTIALLY SUPPORTED")
+            explanation = claim.get("explanation", "")
+            source_numbers = claim.get("source_numbers", [])
+            references = (
+                ", ".join(str(number) for number in source_numbers)
+                if isinstance(source_numbers, list)
+                else str(source_numbers)
+            )
+            formatted.append(
+                f"- **{verdict}:** {statement} {explanation}"
+                + (f" (Sources: {references})" if references else "")
+            )
+        return "\n".join(formatted) if formatted else response

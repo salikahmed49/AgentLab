@@ -82,6 +82,7 @@ def report_node(state: ResearchState):
             verification=state["verification"],
             sources=state["sources"],
             document_context=state.get("document_context", ""),
+            on_section=state.get("on_report_chunk"),
         ),
         on_step=state.get("on_step"),
         on_result=state.get("on_result"),

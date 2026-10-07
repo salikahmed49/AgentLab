@@ -189,3 +189,53 @@ def test_research_returns_citations_and_follow_up_questions(monkeypatch):
     assert data["citations"][0]["source_url"] == "https://example.com"
     assert len(data["follow_up_questions"]) == 2
     assert "risks" in data["follow_up_questions"][0].lower()
+
+
+def test_research_stream_emits_progress_sections_and_final_response(monkeypatch):
+    def fake_research(
+        topic,
+        documents=None,
+        on_step=None,
+        on_result=None,
+        on_report_chunk=None,
+    ):
+        if on_step:
+            on_step("research", "processing")
+        if on_result:
+            on_result(
+                "research",
+                {"research": "Research notes", "sources": []},
+            )
+        if on_step:
+            on_step("research", "completed")
+        if on_report_chunk:
+            on_report_chunk(0, "Executive Summary", "A short summary.")
+        return {
+            "topic": topic,
+            "status": "completed",
+            "research": "Research notes",
+            "analysis": "Analysis notes",
+            "verification": "Verification notes",
+            "report": "# Test topic\n\n## Executive Summary\n\nA short summary.",
+            "sources": [],
+            "citations": [],
+            "follow_up_questions": [],
+            "documents": documents or [],
+        }
+
+    monkeypatch.setattr("backend.main.perform_research", fake_research)
+
+    response = client.post(
+        "/research/stream",
+        json={"topic": "Test topic"},
+        headers={"Origin": "http://localhost:3000"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert "event: progress" in response.text
+    assert "event: partial_result" in response.text
+    assert "event: report_section" in response.text
+    assert "A short summary." in response.text
+    assert "event: complete" in response.text

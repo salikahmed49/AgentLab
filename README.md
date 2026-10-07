@@ -12,6 +12,7 @@ AgentLab is a full-stack AI research assistant that combines a modern frontend, 
 - research topic input and document upload
 - multi-stage AI workflow: research → analysis → verification → report
 - live progress tracking for each step
+- streamed stage progress and report sections
 - web search + uploaded document context
 - frontend built with Next.js and TypeScript
 - backend built with FastAPI and Python
@@ -90,9 +91,9 @@ TAVILY_API_KEY=your_key_here
 
 AgentLab can route each agent task to the most suitable configured provider:
 
-- Gemini for long-context, analysis, and verification tasks.
-- Groq for research synthesis and report drafting.
-- Ollama for compact citation/question tasks and explicitly private content.
+- Groq for search synthesis, analysis, verification, citations, and follow-up questions.
+- Gemini Flash for long-context work and concurrent final-report sections.
+- Ollama as a local fallback and for explicitly private content.
 
 In automatic mode it falls back to another available provider if one fails.
 Private or explicitly local-only content is never sent to a cloud provider.
@@ -114,6 +115,23 @@ OLLAMA_MODEL=qwen3:1.7b
 
 Keep the Ollama app running while using AgentLab. To pin all tasks to one
 provider instead, set `LLM_PROVIDER` to `ollama`, `gemini`, or `groq`.
+
+Optional speed/model settings:
+
+```dotenv
+GROQ_FAST_MODEL=openai/gpt-oss-20b
+GEMINI_MODEL=gemini-3.8-flash
+```
+
+The fast Groq setting applies to analysis and verification; report sections use
+Gemini Flash first and fall back to another configured provider if needed.
+Provider requests use asynchronous clients, bounded concurrency, per-call
+timeouts, and short retries for HTTP 429/5xx responses. Repeated Tavily queries
+are cached in memory for five minutes per backend process.
+
+The frontend uses `POST /research/stream` for Server-Sent Events progress and
+completed report sections. The existing `POST /research` JSON response and
+`/research/jobs` polling endpoints remain available for existing clients.
 
 ## Status
 

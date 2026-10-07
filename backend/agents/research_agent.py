@@ -1,12 +1,17 @@
+import asyncio
+
 from backend.models.research import SearchResult
-from backend.services.llm import generate_response
-from backend.tools.web_search import search_web
+from backend.services.llm import agenerate_response
+from backend.tools.web_search import search_web_async
 
 
 class ResearchAgent:
 
     def run(self, topic: str, document_context: str = "") -> dict:
-        results: list[SearchResult] = search_web(topic)
+        return asyncio.run(self.arun(topic, document_context))
+
+    async def arun(self, topic: str, document_context: str = "") -> dict:
+        results: list[SearchResult] = await search_web_async(topic)
 
         research_context = "\n\n".join(
             [
@@ -49,13 +54,15 @@ Requirements:
 - Keep the research useful for a later analysis agent.
 """
 
-        research = generate_response(
+        research = await agenerate_response(
             prompt,
             system_prompt=(
                 "You are the Research Agent in a multi-agent research system. "
                 "Your job is to collect and synthesize factual information "
                 "from the supplied web sources."
-            )
+            ),
+            stage="research",
+            max_output_tokens=1400,
         )
 
         return {

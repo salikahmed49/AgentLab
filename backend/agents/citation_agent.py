@@ -1,13 +1,30 @@
+import asyncio
 import json
+import logging
 
 from backend.models.research import SearchResult
-from backend.services.llm import generate_response
+from backend.services.llm import agenerate_response, LLMProviderError
 from backend.services.source_context import format_sources
+
+
+logger = logging.getLogger("agentlab")
 
 
 class CitationAgent:
 
     def run(
+        self,
+        topic: str,
+        report: str,
+        verification: str,
+        sources: list[SearchResult],
+        document_context: str = "",
+    ) -> list[dict]:
+        return asyncio.run(
+            self.arun(topic, report, verification, sources, document_context)
+        )
+
+    async def arun(
         self,
         topic: str,
         report: str,
@@ -40,15 +57,8 @@ Sources:
 {document_block}
 
 Create a short, evidence-linked citation list for the most important claims in the report.
-Return valid JSON in this exact shape:
-[
-  {{
-    "claim": "Short claim summary",
-    "source_title": "Source title",
-    "source_url": "https://example.com",
-    "quote": "Short quote from the source"
-  }}
-]
+Return a JSON object with a "citations" array. Each item has claim,
+source_title, source_url, and quote fields.
 
 Rules:
 - Use only the provided sources and document context.
@@ -58,14 +68,18 @@ Rules:
 """
 
         try:
-            response = generate_response(
+            response = await agenerate_response(
                 prompt,
                 system_prompt=(
                     "You are the Citation and Evidence Linker Agent. "
-                    "Return only valid JSON array objects that connect major claims to exact sources."
-                )
+                    "Return only a JSON object whose citations array connects major claims to exact sources."
+                ),
+                stage="citation_linking",
+                response_format="json",
+                max_output_tokens=500,
             )
-        except Exception:
+        except LLMProviderError:
+            logger.exception("citation_generation_failed; using source-grounded fallback")
             response = ""
 
         try:
@@ -74,8 +88,8 @@ Rules:
                 return parsed
             if isinstance(parsed, dict):
                 return parsed.get("citations", [])
-        except (TypeError, ValueError):
-            pass
+        except (TypeError, ValueError) as error:
+            logger.warning("citation_json_parse_failed: %s", type(error).__name__)
 
         if not sources:
             return []
