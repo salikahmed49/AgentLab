@@ -1,6 +1,6 @@
 import { ExternalLink } from "lucide-react";
 import { MarkdownView } from "@/components/markdown-view";
-import { normalizeLineBreakTags } from "@/lib/utils";
+import { normalizeGeneratedMarkup } from "@/lib/utils";
 import type { ResearchResult } from "@/lib/types";
 
 export function ProgressiveResults({ result }: { result: ResearchResult }) {
@@ -55,7 +55,7 @@ export function ProgressiveResults({ result }: { result: ResearchResult }) {
                   <ExternalLink className="size-3.5" aria-hidden />
                 </a>
                 <p className="mt-1 whitespace-pre-line text-muted">
-                  {normalizeLineBreakTags(source.content)}
+                  {normalizeGeneratedMarkup(source.content)}
                 </p>
               </li>
             ))}

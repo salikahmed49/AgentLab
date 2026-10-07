@@ -3,7 +3,7 @@
 import { Children, type ReactElement, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { cn, normalizeLineBreakTags, slugify } from "@/lib/utils";
+import { cn, normalizeGeneratedMarkup, slugify } from "@/lib/utils";
 
 const LABELS = /(PARTIALLY SUPPORTED|NOT SUPPORTED|CONFLICTING|SUPPORTED)/g;
 
@@ -64,7 +64,7 @@ export function MarkdownView({ text, labels = false }: { text: string; labels?: 
   return (
     <article className="report">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={labels ? LABELLED : PLAIN}>
-        {normalizeLineBreakTags(text)}
+        {normalizeGeneratedMarkup(text)}
       </ReactMarkdown>
     </article>
   );

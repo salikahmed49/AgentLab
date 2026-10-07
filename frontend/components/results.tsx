@@ -6,7 +6,7 @@ import { Check, Copy, Download, ExternalLink, Printer } from "lucide-react";
 import { toast } from "sonner";
 import { MarkdownView } from "@/components/markdown-view";
 import type { ResearchResult } from "@/lib/types";
-import { cn, headings, hostOf, normalizeLineBreakTags, slugify } from "@/lib/utils";
+import { cn, headings, hostOf, normalizeGeneratedMarkup, slugify } from "@/lib/utils";
 
 const TABS = [
   "Report",
@@ -137,7 +137,7 @@ export function Results({ result }: { result: ResearchResult }) {
                           </span>
                         </div>
                         <p className="mt-3 line-clamp-3 whitespace-pre-line text-sm leading-6 text-muted">
-                          {normalizeLineBreakTags(source.content)}
+                          {normalizeGeneratedMarkup(source.content)}
                         </p>
                       </li>
                     ))}

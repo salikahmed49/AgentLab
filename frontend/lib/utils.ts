@@ -9,8 +9,18 @@ export function slugify(text: string) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 
-export function normalizeLineBreakTags(text: string) {
-  return text.replace(/<br\s*\/?\s*>/gi, "  \n");
+export function normalizeGeneratedMarkup(text: string) {
+  return text
+    .replace(/&lt;(\/?[a-z][a-z0-9:-]*(?:\s+[^&<>]*?)?\/?)&gt;/gi, "<$1>")
+    .replace(/<\/?br\s*\/?\s*>/gi, "\n\n")
+    .replace(/<\/(?:p|div|section|article|h[1-6]|li|ul|ol|tr|table|blockquote)>/gi, "\n")
+    .replace(/<(?:li)\b[^>]*>/gi, "\n- ")
+    .replace(/<\/?(?:p|div|section|article|h[1-6]|ul|ol|tr|table|blockquote)\b[^>]*>/gi, "\n")
+    .replace(/<\/?[a-z][a-z0-9:-]*(?:\s+[^<>]*?)?\s*\/?>/gi, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 export function hostOf(url: string) {
